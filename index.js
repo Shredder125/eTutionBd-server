@@ -8,7 +8,6 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const port = process.env.PORT || 5000;
 
-// --- MIDDLEWARE ---
 app.use(cors({
     origin: [
         "http://localhost:5173",
@@ -18,7 +17,6 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// --- MONGODB CONNECTION ---
 const uri = process.env.MONGO_URI;
 const client = new MongoClient(uri, {
     serverApi: {
@@ -30,19 +28,13 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        // await client.connect();
-        
         const db = client.db("eTuitionBd");
         const userCollection = db.collection("users");
         const tuitionCollection = db.collection("tuitions");
         const applicationCollection = db.collection("applications");
         const paymentCollection = db.collection("payments");
 
-        console.log("✅ MongoDB Connected Successfully");
-
-        // ======================================================
-        // MIDDLEWARES
-        // ======================================================
+        console.log("MongoDB Connected Successfully");
 
         const verifyToken = (req, res, next) => {
             if (!req.headers.authorization) {
@@ -76,10 +68,6 @@ async function run() {
             next();
         };
 
-        // ======================================================
-        // AUTH ROUTES
-        // ======================================================
-
         app.post('/jwt', async (req, res) => {
             const user = req.body;
             const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' });
@@ -103,10 +91,6 @@ async function run() {
             const result = await userCollection.findOne({ email: req.params.email });
             res.send(result);
         });
-
-        // ======================================================
-        // PUBLIC ROUTES
-        // ======================================================
 
         app.get('/all-tutors', async (req, res) => {
             const query = { role: { $regex: /^tutor$/i } }; 
@@ -135,10 +119,6 @@ async function run() {
             const total = await tuitionCollection.countDocuments(query);
             res.send({ result, total });
         });
-
-        // ======================================================
-        // TUITION MANAGEMENT
-        // ======================================================
 
         app.post('/tuitions', verifyToken, async (req, res) => {
             const item = req.body;
@@ -171,10 +151,6 @@ async function run() {
             const result = await tuitionCollection.deleteOne({ _id: new ObjectId(req.params.id) });
             res.send(result);
         });
-
-        // ======================================================
-        // APPLICATION MANAGEMENT
-        // ======================================================
 
         app.post('/applications', verifyToken, async (req, res) => {
             const application = req.body;
@@ -216,6 +192,23 @@ async function run() {
             res.send(result);
         });
 
+        app.get('/applications/tutor/:email', verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const result = await applicationCollection.aggregate([
+                { $match: { tutorEmail: email } },
+                {
+                    $lookup: {
+                        from: 'tuitions',
+                        localField: 'tuitionId',
+                        foreignField: '_id',
+                        as: 'tuitionData'
+                    }
+                },
+                { $unwind: '$tuitionData' }
+            ]).toArray();
+            res.send(result);
+        });
+
         app.patch('/applications/reject/:id', verifyToken, async(req, res) => {
              const result = await applicationCollection.updateOne(
                  { _id: new ObjectId(req.params.id) },
@@ -224,17 +217,11 @@ async function run() {
              res.send(result);
         });
 
-        // ======================================================
-        // ADMIN ROUTES
-        // ======================================================
-
-        // ✅ 1. NEW: Get All Users (For Manage Users Page)
         app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
             const result = await userCollection.find().toArray();
             res.send(result);
         });
 
-        // ✅ 2. NEW: Change User Role (Make Admin/Tutor)
         app.patch('/users/role/:id', verifyToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const { role } = req.body;
@@ -246,7 +233,6 @@ async function run() {
             res.send(result);
         });
 
-        // ✅ 3. NEW: Delete User
         app.delete('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const query = { _id: new ObjectId(id) };
@@ -254,7 +240,6 @@ async function run() {
             res.send(result);
         });
 
-        // Existing Admin Routes...
         app.get('/tuitions/admin/all', verifyToken, verifyAdmin, async (req, res) => {
             const result = await tuitionCollection.find().sort({ createdAt: -1 }).toArray();
             res.send(result);
@@ -279,13 +264,15 @@ async function run() {
             res.send({ users, tuitions, applications, revenue });
         });
 
-        // ======================================================
-        // PAYMENT ROUTES
-        // ======================================================
-
         app.get('/payments/my-history/:email', verifyToken, async (req, res) => {
             const email = req.params.email;
             const result = await paymentCollection.find({ email: email }).toArray();
+            res.send(result);
+        });
+
+        app.get('/payments/tutor-history/:email', verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const result = await paymentCollection.find({ tutorEmail: email }).toArray();
             res.send(result);
         });
 
@@ -311,10 +298,10 @@ async function run() {
         });
 
         await client.db("admin").command({ ping: 1 });
-        console.log("✅ MongoDB Connected Successfully!");
+        console.log("MongoDB Connected Successfully!");
 
     } finally {
-        // await client.close();
+        
     }
 }
 run().catch(console.dir);
