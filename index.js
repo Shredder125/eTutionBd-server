@@ -108,9 +108,7 @@ async function run() {
         // PUBLIC ROUTES
         // ======================================================
 
-        // ✅ NEW: Specific route to get ALL TUTORS safely
         app.get('/all-tutors', async (req, res) => {
-            // Case insensitive check for 'tutor' just in case
             const query = { role: { $regex: /^tutor$/i } }; 
             const result = await userCollection.find(query).toArray();
             res.send(result);
@@ -196,7 +194,6 @@ async function run() {
 
         app.get('/applications/received/:email', verifyToken, async (req, res) => {
             const email = req.params.email;
-            
             const myTuitions = await tuitionCollection.find({ studentEmail: email }).toArray();
             
             const result = await applicationCollection.aggregate([
@@ -228,8 +225,40 @@ async function run() {
         });
 
         // ======================================================
-        // ADMIN & PAYMENT ROUTES
+        // ADMIN ROUTES
         // ======================================================
+
+        // ✅ 1. NEW: Get All Users (For Manage Users Page)
+        app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
+            const result = await userCollection.find().toArray();
+            res.send(result);
+        });
+
+        // ✅ 2. NEW: Change User Role (Make Admin/Tutor)
+        app.patch('/users/role/:id', verifyToken, verifyAdmin, async (req, res) => {
+            const id = req.params.id;
+            const { role } = req.body;
+            const filter = { _id: new ObjectId(id) };
+            const updateDoc = {
+                $set: { role: role }
+            };
+            const result = await userCollection.updateOne(filter, updateDoc);
+            res.send(result);
+        });
+
+        // ✅ 3. NEW: Delete User
+        app.delete('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            const result = await userCollection.deleteOne(query);
+            res.send(result);
+        });
+
+        // Existing Admin Routes...
+        app.get('/tuitions/admin/all', verifyToken, verifyAdmin, async (req, res) => {
+            const result = await tuitionCollection.find().sort({ createdAt: -1 }).toArray();
+            res.send(result);
+        });
 
         app.patch('/tuitions/status/:id', verifyToken, verifyAdmin, async (req, res) => {
             const result = await tuitionCollection.updateOne(
@@ -248,6 +277,16 @@ async function run() {
             ]).toArray();
             const revenue = payments.length > 0 ? payments[0].totalRevenue : 0;
             res.send({ users, tuitions, applications, revenue });
+        });
+
+        // ======================================================
+        // PAYMENT ROUTES
+        // ======================================================
+
+        app.get('/payments/my-history/:email', verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const result = await paymentCollection.find({ email: email }).toArray();
+            res.send(result);
         });
 
         app.post('/create-payment-intent', verifyToken, async (req, res) => {
