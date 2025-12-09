@@ -8,20 +8,18 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Middleware
+// --- MIDDLEWARE ---
 app.use(cors({
     origin: [
         "http://localhost:5173",
-        "https://your-firebase-project.web.app" // Add your live link here later
+        "https://your-firebase-project.web.app"
     ],
     credentials: true
 }));
 app.use(express.json());
 
-// MongoDB Connection
-// PASTE THIS INSTEAD:
+// --- MONGODB CONNECTION ---
 const uri = process.env.MONGO_URI;
-
 const client = new MongoClient(uri, {
     serverApi: {
         version: ServerApiVersion.v1,
@@ -32,8 +30,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        // Connect the client to the server
-        // await client.connect(); // Optional in Vercel/Serverless but good for local
+        // await client.connect();
         
         const db = client.db("eTuitionBd");
         const userCollection = db.collection("users");
@@ -41,11 +38,12 @@ async function run() {
         const applicationCollection = db.collection("applications");
         const paymentCollection = db.collection("payments");
 
-        // --------------------------------------------------------
-        // MIDDLEWARES (Security Layer)
-        // --------------------------------------------------------
+        console.log("✅ MongoDB Connected Successfully");
 
-        // 1. Verify Token (JWT)
+        // ======================================================
+        // MIDDLEWARES
+        // ======================================================
+
         const verifyToken = (req, res, next) => {
             if (!req.headers.authorization) {
                 return res.status(401).send({ message: 'unauthorized access' });
@@ -60,47 +58,37 @@ async function run() {
             });
         };
 
-        // 2. Verify Admin
         const verifyAdmin = async (req, res, next) => {
             const email = req.decoded.email;
-            const query = { email: email };
-            const user = await userCollection.findOne(query);
-            const isAdmin = user?.role === 'admin';
-            if (!isAdmin) {
+            const user = await userCollection.findOne({ email });
+            if (user?.role !== 'admin') {
                 return res.status(403).send({ message: 'forbidden access' });
             }
             next();
         };
 
-        // 3. Verify Tutor
         const verifyTutor = async (req, res, next) => {
             const email = req.decoded.email;
-            const query = { email: email };
-            const user = await userCollection.findOne(query);
-            const isTutor = user?.role === 'tutor';
-            if (!isTutor) {
+            const user = await userCollection.findOne({ email });
+            if (user?.role !== 'tutor') {
                 return res.status(403).send({ message: 'forbidden access' });
             }
             next();
         };
 
-        // --------------------------------------------------------
-        // AUTHENTICATION ROUTES
-        // --------------------------------------------------------
+        // ======================================================
+        // AUTH ROUTES
+        // ======================================================
 
-        // Generate JWT Token
         app.post('/jwt', async (req, res) => {
             const user = req.body;
             const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' });
             res.send({ token });
         });
 
-        // Save User (Google Login / Register)
         app.post('/users', async (req, res) => {
             const user = req.body;
-            // Check if user exists
-            const query = { email: user.email };
-            const existingUser = await userCollection.findOne(query);
+            const existingUser = await userCollection.findOne({ email: user.email });
             if (existingUser) {
                 return res.send({ message: 'user already exists', insertedId: null });
             }
@@ -108,240 +96,185 @@ async function run() {
             res.send(result);
         });
 
-        // Get User Role & Info
         app.get('/users/:email', verifyToken, async (req, res) => {
-            const email = req.params.email;
-            if (email !== req.decoded.email) {
+            if (req.params.email !== req.decoded.email) {
                 return res.status(403).send({ message: 'forbidden access' });
             }
-            const query = { email: email };
-            const user = await userCollection.findOne(query);
-            res.send(user);
+            const result = await userCollection.findOne({ email: req.params.email });
+            res.send(result);
         });
 
-        // --------------------------------------------------------
-        // TUITION ROUTES (Public & Student)
-        // --------------------------------------------------------
+        // ======================================================
+        // PUBLIC ROUTES
+        // ======================================================
 
-        // Get All Tuitions (Public + Challenge: Search, Sort, Pagination)
+        // ✅ NEW: Specific route to get ALL TUTORS safely
+        app.get('/all-tutors', async (req, res) => {
+            // Case insensitive check for 'tutor' just in case
+            const query = { role: { $regex: /^tutor$/i } }; 
+            const result = await userCollection.find(query).toArray();
+            res.send(result);
+        });
+
         app.get('/tuitions', async (req, res) => {
             const page = parseInt(req.query.page) || 0;
             const limit = parseInt(req.query.limit) || 9;
             const search = req.query.search || "";
-            const sort = req.query.sort; // 'asc' or 'desc' for budget
-
-            // Search by Subject or Location
+            
             const query = {
-                status: 'approved', // Only show approved tuitions
+                status: 'approved',
                 $or: [
                     { subject: { $regex: search, $options: 'i' } },
                     { location: { $regex: search, $options: 'i' } }
                 ]
             };
 
-            let options = {};
-            if (sort) {
-                options = { sort: { budget: sort === 'asc' ? 1 : -1 } };
-            }
-
-            const result = await tuitionCollection.find(query, options)
+            const result = await tuitionCollection.find(query)
                 .skip(page * limit)
                 .limit(limit)
                 .toArray();
             
-            // Send total count for pagination
             const total = await tuitionCollection.countDocuments(query);
-
-            res.send({
-                result,
-                total
-            });
+            res.send({ result, total });
         });
 
-        // Get Single Tuition Details
-        app.get('/tuitions/:id', verifyToken, async (req, res) => {
-            const id = req.params.id;
-            const query = { _id: new ObjectId(id) };
-            const result = await tuitionCollection.findOne(query);
-            res.send(result);
-        });
+        // ======================================================
+        // TUITION MANAGEMENT
+        // ======================================================
 
-        // Post a Tuition (Student Only)
         app.post('/tuitions', verifyToken, async (req, res) => {
             const item = req.body;
-            item.status = 'pending'; // Default status
+            item.status = 'pending';
             item.createdAt = new Date();
             const result = await tuitionCollection.insertOne(item);
             res.send(result);
         });
 
-        // Get My Tuitions (Student)
         app.get('/my-tuitions/:email', verifyToken, async (req, res) => {
             const email = req.params.email;
-            const query = { email: email }; // Assuming 'email' is the field for creator
-            const result = await tuitionCollection.find(query).toArray();
+            const result = await tuitionCollection.find({ studentEmail: email }).toArray();
             res.send(result);
         });
 
-        // Delete Tuition (Student)
-        app.delete('/tuitions/:id', verifyToken, async (req, res) => {
-            const id = req.params.id;
-            const query = { _id: new ObjectId(id) };
-            const result = await tuitionCollection.deleteOne(query);
+        app.get('/tuitions/:id', verifyToken, async (req, res) => {
+            const result = await tuitionCollection.findOne({ _id: new ObjectId(req.params.id) });
             res.send(result);
         });
 
-        // Update Tuition (Student)
         app.patch('/tuitions/update/:id', verifyToken, async (req, res) => {
-            const id = req.params.id;
-            const filter = { _id: new ObjectId(id) };
-            const updatedDoc = {
-                $set: req.body
-            }
-            const result = await tuitionCollection.updateOne(filter, updatedDoc);
+            const result = await tuitionCollection.updateOne(
+                { _id: new ObjectId(req.params.id) },
+                { $set: req.body }
+            );
             res.send(result);
         });
 
+        app.delete('/tuitions/:id', verifyToken, async (req, res) => {
+            const result = await tuitionCollection.deleteOne({ _id: new ObjectId(req.params.id) });
+            res.send(result);
+        });
 
-        // --------------------------------------------------------
-        // APPLICATION ROUTES (The Logic Core)
-        // --------------------------------------------------------
+        // ======================================================
+        // APPLICATION MANAGEMENT
+        // ======================================================
 
-        // Apply for Tuition (Tutor)
-        app.post('/applications', verifyToken, verifyTutor, async (req, res) => {
+        app.post('/applications', verifyToken, async (req, res) => {
             const application = req.body;
-            // Prevent duplicate application
-            const query = { 
+            application.status = 'pending';
+            
+            const exists = await applicationCollection.findOne({ 
                 tuitionId: application.tuitionId, 
                 tutorEmail: application.tutorEmail 
-            };
-            const existingApp = await applicationCollection.findOne(query);
-            if (existingApp) {
+            });
+            
+            if (exists) {
                 return res.status(400).send({ message: 'Already applied' });
             }
             const result = await applicationCollection.insertOne(application);
             res.send(result);
         });
 
-        // Get Applications for My Tuition (Student)
-        app.get('/applications/tuition/:tuitionId', verifyToken, async (req, res) => {
-            const tuitionId = req.params.tuitionId;
-            const query = { tuitionId: tuitionId };
-            const result = await applicationCollection.find(query).toArray();
-            res.send(result);
-        });
-
-        // Get My Applications (Tutor)
-        app.get('/my-applications/:email', verifyToken, verifyTutor, async (req, res) => {
+        app.get('/applications/received/:email', verifyToken, async (req, res) => {
             const email = req.params.email;
-            const query = { tutorEmail: email };
-            const result = await applicationCollection.find(query).toArray();
+            
+            const myTuitions = await tuitionCollection.find({ studentEmail: email }).toArray();
+            
+            const result = await applicationCollection.aggregate([
+                {
+                    $lookup: {
+                        from: 'tuitions',
+                        localField: 'tuitionId',
+                        foreignField: '_id',
+                        as: 'tuitionData'
+                    }
+                },
+                { $unwind: '$tuitionData' },
+                { 
+                    $match: { 
+                        'tuitionData.studentEmail': email 
+                    } 
+                }
+            ]).toArray();
+
             res.send(result);
         });
 
-        // Reject Application (Student)
         app.patch('/applications/reject/:id', verifyToken, async(req, res) => {
-             const id = req.params.id;
-             const query = { _id: new ObjectId(id) };
-             const updatedDoc = {
-                 $set: { status: 'rejected' }
-             }
-             const result = await applicationCollection.updateOne(query, updatedDoc);
+             const result = await applicationCollection.updateOne(
+                 { _id: new ObjectId(req.params.id) },
+                 { $set: { status: 'rejected' } }
+             );
              res.send(result);
         });
 
+        // ======================================================
+        // ADMIN & PAYMENT ROUTES
+        // ======================================================
 
-        // --------------------------------------------------------
-        // ADMIN ROUTES
-        // --------------------------------------------------------
-
-        // Get All Users
-        app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
-            const result = await userCollection.find().toArray();
-            res.send(result);
-        });
-
-        // Make Admin/Tutor
-        app.patch('/users/admin/:id', verifyToken, verifyAdmin, async (req, res) => {
-            const id = req.params.id;
-            const filter = { _id: new ObjectId(id) };
-            const updatedDoc = {
-                $set: { role: req.body.role } // 'admin' or 'tutor' or 'student'
-            };
-            const result = await userCollection.updateOne(filter, updatedDoc);
-            res.send(result);
-        });
-
-        // Approve/Reject Tuition (Admin)
         app.patch('/tuitions/status/:id', verifyToken, verifyAdmin, async (req, res) => {
-            const id = req.params.id;
-            const filter = { _id: new ObjectId(id) };
-            const updatedDoc = {
-                $set: { status: req.body.status } // 'approved' or 'rejected'
-            };
-            const result = await tuitionCollection.updateOne(filter, updatedDoc);
+            const result = await tuitionCollection.updateOne(
+                { _id: new ObjectId(req.params.id) },
+                { $set: { status: req.body.status } }
+            );
             res.send(result);
         });
 
-        // Admin Stats
         app.get('/admin-stats', verifyToken, verifyAdmin, async(req, res) => {
             const users = await userCollection.estimatedDocumentCount();
             const tuitions = await tuitionCollection.estimatedDocumentCount();
             const applications = await applicationCollection.estimatedDocumentCount();
-            
-            // Calculate total revenue from payments collection
             const payments = await paymentCollection.aggregate([
                 { $group: { _id: null, totalRevenue: { $sum: '$price' } } }
             ]).toArray();
             const revenue = payments.length > 0 ? payments[0].totalRevenue : 0;
-
             res.send({ users, tuitions, applications, revenue });
-        })
+        });
 
-
-        // --------------------------------------------------------
-        // PAYMENT INTENT (Stripe)
-        // --------------------------------------------------------
         app.post('/create-payment-intent', verifyToken, async (req, res) => {
             const { price } = req.body;
-            const amount = parseInt(price * 100); // Stripe works in cents
-            
+            const amount = parseInt(price * 100);
             const paymentIntent = await stripe.paymentIntents.create({
                 amount: amount,
                 currency: 'usd',
                 payment_method_types: ['card']
             });
-
-            res.send({
-                clientSecret: paymentIntent.client_secret
-            });
+            res.send({ clientSecret: paymentIntent.client_secret });
         });
 
-        // Save Payment Info & Approve Tutor Application
         app.post('/payments', verifyToken, async (req, res) => {
             const payment = req.body;
-            // 1. Save payment
             const paymentResult = await paymentCollection.insertOne(payment);
-            
-            // 2. Update the specific application status to 'approved'
-            const query = { _id: new ObjectId(payment.applicationId) };
-            const updatedDoc = {
-                $set: { status: 'approved' }
-            };
-            const appResult = await applicationCollection.updateOne(query, updatedDoc);
-
-            // 3. (Optional) Reject other applications for this tuition?
-            // Requires logic to find other apps with same tuitionId and set to rejected
-
+            const appResult = await applicationCollection.updateOne(
+                { _id: new ObjectId(payment.applicationId) },
+                { $set: { status: 'approved' } }
+            );
             res.send({ paymentResult, appResult });
         });
 
-
-        // Ping to confirm connection
         await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+        console.log("✅ MongoDB Connected Successfully!");
+
     } finally {
-        // Ensures that the client will close when you finish/error
         // await client.close();
     }
 }
