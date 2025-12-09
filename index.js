@@ -92,6 +92,19 @@ async function run() {
             res.send(result);
         });
 
+        app.patch('/users/update/:email', verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const filter = { email: email };
+            const updateDoc = {
+                $set: {
+                    name: req.body.name,
+                    photoURL: req.body.photoURL
+                }
+            };
+            const result = await userCollection.updateOne(filter, updateDoc);
+            res.send(result);
+        });
+
         app.get('/all-tutors', async (req, res) => {
             const query = { role: { $regex: /^tutor$/i } }; 
             const result = await userCollection.find(query).toArray();
