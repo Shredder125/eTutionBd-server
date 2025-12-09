@@ -110,19 +110,33 @@ async function run() {
             const result = await userCollection.find(query).toArray();
             res.send(result);
         });
-
+        
+        // --- UPDATED TUITIONS ROUTE (Pagination, Search, Class Filter) ---
         app.get('/tuitions', async (req, res) => {
             const page = parseInt(req.query.page) || 0;
             const limit = parseInt(req.query.limit) || 9;
             const search = req.query.search || "";
+            const classFilter = req.query.class || ""; 
             
-            const query = {
+            let query = {
                 status: 'approved',
                 $or: [
                     { subject: { $regex: search, $options: 'i' } },
                     { location: { $regex: search, $options: 'i' } }
                 ]
             };
+
+            // Add class filter as an AND condition if it exists
+            if (classFilter) {
+                query = {
+                    status: 'approved',
+                    classGrade: classFilter, 
+                    $or: [
+                        { subject: { $regex: search, $options: 'i' } },
+                        { location: { $regex: search, $options: 'i' } }
+                    ]
+                };
+            }
 
             const result = await tuitionCollection.find(query)
                 .skip(page * limit)
@@ -132,6 +146,17 @@ async function run() {
             const total = await tuitionCollection.countDocuments(query);
             res.send({ result, total });
         });
+        // --- END TUITIONS ROUTE ---
+
+        // --- NEW: FEATURED TUTORS ROUTE (No Limit) ---
+        app.get('/featured-tutors', async (req, res) => {
+            const result = await userCollection.aggregate([
+                { $match: { role: { $regex: /^tutor$/i } } }
+            ]).toArray();
+            res.send(result);
+        });
+        // --- END FEATURED TUTORS ROUTE ---
+
 
         app.post('/tuitions', verifyToken, async (req, res) => {
             const item = req.body;
