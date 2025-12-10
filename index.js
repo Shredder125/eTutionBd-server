@@ -192,7 +192,7 @@ async function run() {
       res.send(result);
     });
 
-    // ✅ FIXED: Get applications received by student
+    // Get applications received by student
     app.get("/applications/received/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       if (req.decoded.email !== email)
@@ -225,12 +225,12 @@ async function run() {
 
     // --- TUTOR DASHBOARD ROUTES ---
 
-    // ✅ FIXED: Create application with ObjectId conversion
+    // Create application with ObjectId conversion
     app.post("/applications", verifyToken, async (req, res) => {
       const application = req.body;
       application.status = "pending";
 
-      // ✅ CRITICAL FIX: Convert tuitionId string to ObjectId for proper lookup
+      // Convert tuitionId string to ObjectId for proper lookup
       try {
         application.tuitionId = new ObjectId(application.tuitionId);
       } catch (e) {
@@ -356,72 +356,147 @@ async function run() {
       res.send({ users, tuitions, applications, revenue });
     });
 
-
-
     // --- PAYMENT ROUTES ---
 
+    // Create Payment Intent
     app.post("/create-payment-intent", verifyToken, async (req, res) => {
-      const { price } = req.body;
-      if (!price) return res.status(400).send({ error: "Price is required" });
-
-      const amount = parseInt(price * 100);
-
       try {
+        const { price } = req.body;
+        
+        if (!price || price <= 0) {
+          return res.status(400).send({ error: "Valid price is required" });
+        }
+
+        // Convert to smallest currency unit (cents for USD, paisa for BDT)
+        const amount = parseInt(price * 100);
+
         const paymentIntent = await stripe.paymentIntents.create({
           amount: amount,
-          currency: "usd",
+          currency: "usd", // Change to "bdt" if you want Bangladeshi Taka
           payment_method_types: ["card"],
+          metadata: {
+            integration_check: 'accept_a_payment'
+          }
         });
-        res.send({ clientSecret: paymentIntent.client_secret });
+
+        res.send({ 
+          clientSecret: paymentIntent.client_secret 
+        });
       } catch (error) {
-        res.status(400).send({ error: error.message });
+        console.error("Payment intent error:", error);
+        res.status(500).send({ error: error.message });
       }
     });
 
+    // Save Payment and Update Application/Tuition
     app.post("/payments", verifyToken, async (req, res) => {
-      const payment = req.body;
-
       try {
+        const payment = req.body;
+
+        // Validate required fields
+        if (!payment.applicationId || !payment.transactionId) {
+          return res.status(400).send({ 
+            error: "Missing required payment information" 
+          });
+        }
+
+        // 1. Fetch application details to get tutor info
         const application = await applicationCollection.findOne({
           _id: new ObjectId(payment.applicationId),
         });
 
-        if (application) {
-          payment.tutorEmail = application.tutorEmail;
+        if (!application) {
+          return res.status(404).send({ 
+            error: "Application not found" 
+          });
         }
 
+        // 2. Add tutor email to payment record
+        payment.tutorEmail = application.tutorEmail;
+        payment.tutorName = application.tutorName;
+        payment.date = new Date();
+
+        // 3. Insert payment record
         const paymentResult = await paymentCollection.insertOne(payment);
 
-        const appResult = await applicationCollection.updateOne(
+        // 4. Update application status to 'approved'
+        const updateApplication = await applicationCollection.updateOne(
           { _id: new ObjectId(payment.applicationId) },
-          { $set: { status: "approved" } }
+          { 
+            $set: { 
+              status: "approved",
+              paymentId: payment.transactionId,
+              approvedAt: new Date()
+            } 
+          }
         );
 
-        res.send({ paymentResult, appResult });
+        // 5. Update tuition post status to 'filled'
+        if (payment.tuitionId) {
+          await tuitionCollection.updateOne(
+            { _id: new ObjectId(payment.tuitionId) },
+            { 
+              $set: { 
+                status: "filled",
+                hiredTutorEmail: application.tutorEmail,
+                hiredAt: new Date()
+              } 
+            }
+          );
+        }
+
+        res.send({ 
+          paymentResult, 
+          updateApplication,
+          message: "Payment successful and tutor hired!" 
+        });
+
       } catch (error) {
-        res.status(400).send({ error: error.message });
+        console.error("Payment save error:", error);
+        res.status(500).send({ error: error.message });
       }
     });
 
+    // Get student's payment history
     app.get("/payments/my-history/:email", verifyToken, async (req, res) => {
-      if (req.decoded.email !== req.params.email)
-        return res.status(403).send({ message: "forbidden" });
-      const result = await paymentCollection
-        .find({ email: req.params.email })
-        .sort({ date: -1 })
-        .toArray();
-      res.send(result);
+      try {
+        const email = req.params.email;
+        
+        if (req.decoded.email !== email) {
+          return res.status(403).send({ message: "forbidden access" });
+        }
+
+        const result = await paymentCollection
+          .find({ email: email })
+          .sort({ date: -1 })
+          .toArray();
+        
+        res.send(result);
+      } catch (error) {
+        console.error("Payment history error:", error);
+        res.status(500).send({ error: error.message });
+      }
     });
 
+    // Get tutor's earnings history
     app.get("/payments/tutor-history/:email", verifyToken, async (req, res) => {
-      if (req.decoded.email !== req.params.email)
-        return res.status(403).send({ message: "forbidden" });
+      try {
+        const email = req.params.email;
+        
+        if (req.decoded.email !== email) {
+          return res.status(403).send({ message: "forbidden access" });
+        }
 
-      const result = await paymentCollection
-        .find({ tutorEmail: req.params.email })
-        .sort({ date: -1 })
-        .toArray();
-      res.send(result);
+        const result = await paymentCollection
+          .find({ tutorEmail: email })
+          .sort({ date: -1 })
+          .toArray();
+        
+        res.send(result);
+      } catch (error) {
+        console.error("Tutor earnings error:", error);
+        res.status(500).send({ error: error.message });
+      }
     });
 
     // Health check
