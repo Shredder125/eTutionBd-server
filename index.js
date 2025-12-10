@@ -13,6 +13,7 @@ app.use(
       "http://localhost:5173",
       "https://your-firebase-project.web.app",
       "https://etuition-client.web.app",
+      "https://etuitionbd.netlify.app",
     ],
     credentials: true,
   })
