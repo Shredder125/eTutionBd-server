@@ -69,10 +69,32 @@ async function run() {
       res.send(result || { role: "student" });
     });
 
+    // --- UPDATED USER INFO ROUTE ---
     app.patch("/users/update/:email", verifyToken, async (req, res) => {
-      if (req.decoded.email !== req.params.email) return res.status(403).send({ message: "forbidden" });
-      const updateDoc = { $set: { name: req.body.name, photoURL: req.body.photoURL } };
-      const result = await userCollection.updateOne({ email: req.params.email }, updateDoc);
+      const email = req.params.email;
+      const requesterEmail = req.decoded.email;
+      const requester = await userCollection.findOne({ email: requesterEmail });
+
+      // Only self-update OR admin can update
+      if (requesterEmail !== email && requester?.role !== "admin") {
+        return res.status(403).send({ message: "forbidden" });
+      }
+
+      // Prevent duplicate email update
+      if (req.body.email && req.body.email !== email) {
+        const existingUser = await userCollection.findOne({ email: req.body.email });
+        if (existingUser) return res.status(400).send({ message: "Email already in use" });
+      }
+
+      const updateDoc = { $set: {
+        name: req.body.name,
+        email: req.body.email,
+        phone: req.body.phone,
+        photoURL: req.body.photoURL,
+        status: req.body.status // active/inactive
+      }};
+
+      const result = await userCollection.updateOne({ email }, updateDoc);
       res.send(result);
     });
 
