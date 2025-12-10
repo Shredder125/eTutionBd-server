@@ -33,6 +33,7 @@ async function run() {
     const applicationCollection = db.collection("applications");
     const paymentCollection = db.collection("payments");
 
+    // --- MIDDLEWARE ---
     const verifyToken = (req, res, next) => {
       if (!req.headers.authorization) return res.status(401).send({ message: "unauthorized access" });
       const token = req.headers.authorization.split(" ")[1];
@@ -169,6 +170,23 @@ async function run() {
       res.send(result);
     });
 
+    // --- GET SINGLE APPLICATION ---
+    app.get("/applications/:id", verifyToken, async (req, res) => {
+      try {
+        const application = await applicationCollection.findOne({ _id: new ObjectId(req.params.id) });
+        if (!application) return res.status(404).send({ message: "Application not found" });
+
+        if (req.decoded.email !== application.tutorEmail) {
+          const user = await userCollection.findOne({ email: req.decoded.email });
+          if (user?.role !== "admin") return res.status(403).send({ message: "Forbidden access" });
+        }
+
+        res.send(application);
+      } catch {
+        res.status(400).send({ message: "Invalid application ID" });
+      }
+    });
+
     app.delete("/applications/:id", verifyToken, async (req, res) => {
       const result = await applicationCollection.deleteOne({ _id: new ObjectId(req.params.id) });
       res.send(result);
@@ -235,10 +253,16 @@ async function run() {
       payment.date = new Date();
 
       const paymentResult = await paymentCollection.insertOne(payment);
-      await applicationCollection.updateOne({ _id: new ObjectId(payment.applicationId) }, { $set: { status: "approved", paymentId: payment.transactionId, approvedAt: new Date() } });
+      await applicationCollection.updateOne(
+        { _id: new ObjectId(payment.applicationId) },
+        { $set: { status: "approved", paymentId: payment.transactionId, approvedAt: new Date() } }
+      );
 
       if (payment.tuitionId) {
-        await tuitionCollection.updateOne({ _id: new ObjectId(payment.tuitionId) }, { $set: { status: "filled", hiredTutorEmail: application.tutorEmail, hiredAt: new Date() } });
+        await tuitionCollection.updateOne(
+          { _id: new ObjectId(payment.tuitionId) },
+          { $set: { status: "filled", hiredTutorEmail: application.tutorEmail, hiredAt: new Date() } }
+        );
       }
 
       res.send({ paymentResult, message: "Payment successful and tutor hired!" });
@@ -257,7 +281,7 @@ async function run() {
     });
 
     await client.db("admin").command({ ping: 1 });
-
+    console.log("MongoDB connected successfully!");
   } catch (error) {
     console.error(error);
   }
@@ -271,4 +295,6 @@ app.use((err, req, res, next) => {
   res.status(500).send({ message: "Internal Server Error" });
 });
 
-app.listen(port, () => { });
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
